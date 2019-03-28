@@ -9,8 +9,7 @@ export Jacobi
 export ellipj, ellipke
 
 include("slatec.jl")
-include("ellipticfuns.jl")
+include("integrals.jl")
 include("jacobi.jl")
-include("landen.jl")
 
 end # module

@@ -1,5 +1,5 @@
 #
-# elliptic integrals of 1st/2nd/3rd kind and matlab compatible calls
+# elliptic (in)complete integrals of 1st/2nd/3rd kind and matlab compatible calls
 #
 
 """
@@ -143,4 +143,4 @@ function ellipj(u::Float64, m::Float64, tol::Float64)
     s, c, d
 end
 ellipj(u::Float64, m::Float64) = ellipj(u, m, eps(Float64))
-ellipj(u::Real, m::Real) = ellipj(Float64(phi), Float64(m))
+ellipj(u::Real, m::Real) = ellipj(Float64(u), Float64(m))
