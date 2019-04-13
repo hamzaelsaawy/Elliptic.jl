@@ -11,5 +11,6 @@ export ellipj, ellipke
 include("slatec.jl")
 include("integrals.jl")
 include("jacobi.jl")
+include("landen.jl")
 
 end # module
