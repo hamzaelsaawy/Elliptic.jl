@@ -14,6 +14,7 @@
         @test LandenSeq(1 + eps()) isa NonConvergedLandenSeq
         @test LandenSeq(NaN) isa NonConvergedLandenSeq
         @test LandenSeq(NaN, descending=false) isa NonConvergedLandenSeq
+        @test LandenSeq(Inf) isa NonConvergedLandenSeq
         @test LandenSeq((0.5, ), descending=false) isa LandenSeq{0, Base.Bottom}
         @test LandenSeq("0.5", descending=false) isa LandenSeq{0, Base.Bottom}
 
@@ -54,8 +55,6 @@
             @test LandenSeq(k, N=N-1, descending=true, ktol=1e-16) isa NonConvergedLandenSeq
         end
     end
-
-
 
     @testset "a&b table 17.1" begin
         # read as bigfloat since Float64 to BigFloat introduces errors on order of 1e-17
@@ -127,4 +126,8 @@
             end
         end
     end # table 17.2
+
+    @testset "jacobi" begin
+
+    end
 end # end landen tests

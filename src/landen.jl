@@ -3,87 +3,136 @@
 #
 module Landen
 
+import Base.Math.@horner
 import ..Elliptic: K
 
-export LandenSeq, landenseq, NonConvergedLandenSeq
+export LandenSeq, NonConvergedLandenSeq
+
+################################################################################
+# miscellaneous
+################################################################################
 
 const Maybe{T} = Union{Nothing, T}
-const RealOrComplex{T<:AbstractFloat} = Union{T, Complex{T}}
+const RealOrComplexFloat{T<:AbstractFloat} = Union{T, Complex{T}}
 
-#
+# do everything as a float
+_one_eps(x) = eps(float(real(typeof(x))))
+
+_float_typeof(x) = float(typeof(x))
+_promote_float_typeof(x) = _float_typeof(x)
+@inline _promote_float_typeof(x, xs...) =
+        promote_type(_promote_float_typeof(x), _promote_float_typeof(xs...))
+_promote_float(ts...) = convert.(_promote_float_typeof(ts...), ts)
+
+# landen can be used on complex moduli, and k can be an Int
+# √(eps) because 1 - k² = 1 when k² ≤ eps(k), so m is indistinguishable from 0
+# need k ≤ _kmin for K′ approximation convergence
+# also, see _sncndn_seq_end for √eps decision
+_default_tol(k) = min(√(_one_eps(k)), _kmin)
+
+# rotate numbers by pi to have phase in (-pi/2, pi/2)
+_positive_root(x::Real) = abs(x)
+_positive_root(x::Complex) = ifelse(real(x) < 0, -x, x)
+
+const _kmid = 1/sqrt(2.0)
+# from Lecture Notes on Elliptic Filter Design, Sophocles J. Orfanidis, 2006
+const _kmin = 1e-6
+const _kmax = 0.9999999999995 # _k′(_kmin)
+
+ _k′(k) = sqrt((1-k)*(1+k))
+
+################################################################################
 # Landen Sequence
-#
+################################################################################
+
+# TODO
+# complex k -> check which root is used, push k to have |ph| < pi/2, Rz > 0
+#  pq(z, k) = pq(z, -k) -> http://dlmf.nist.gov/22.17.E1
+# check for purely imaginary k -> Rz < eps(Iz)
 
 abstract type LandenDirection end
-struct DescendingLanded <:LandenDirection end
-struct AscendingLanded <:LandenDirection end
+struct DescendingLanden <: LandenDirection end
+struct AscendingLanden <: LandenDirection end
 
+swap(::Type{AscendingLanden}, a, b) = (b, a)
+swap(::Type{DescendingLanden}, a, b) = (a, b)
 
-#Returns a tuple of kₙs in descending (ascending) Landen sequence where K′ₙ/Kₙ doubles (halves)
-"""
-    LandenSeq(k, [k′]; N::Int=10, ktol=√eps(k), descending=(k ≤ 1/√2))
-
-Return the elliptic moduli, `{(kₙ, k′ₙ)}`, in a Landen sequence starting with `k₀ = k`
-
-Compute and store `LandenSeq` containing `{(kₙ, k′ₙ)}` of a descending (ascending) Landen
-sequence starting from `k₀ = k` until kₙ converges to 0 (1) via criteria `kₙ ≤ ktol`
-(`k′ₙ ≤ ktol` or `kₙ ≥ 1 - ktol`).
-Returns a `landen <: LandenSeq{0} == NonConvergedLandenSeq` if `(k ∉ ℝ & k ∉ [0, 1])`,
-`(k ∉ ℂ & abs(k) ∉ [0, 1])`, or the sequence did not converge in `N` iterations.
-"""
-struct LandenSeq{N, T<:RealOrComplex}
-    # basically a SArray{(2, N), T, 2*N}
+struct LandenSeq{N, T<:RealOrComplexFloat, D<:LandenDirection}
+    # basically an SArray{(2, N), T, 2*N}
     ks::NTuple{N, T}
     k′s::NTuple{N, T}
 
-    LandenSeq(U::Type) = new{0, U}((), ())
-    function LandenSeq(k::Number, k′::Maybe{Number}=nothing; N=10, ktol=_default_tol(k),
-            descending=(k ≤ 1/sqrt(2)))
-        k = float(k)
-        T = typeof(k)
-        # abs for complex moduli
-        ka = isreal(k) ? k : abs(k)
-        (0 ≤ ka ≤ 1) || return LandenSeq(T)
+    # non-converged case
+    LandenSeq(U::Type, D::Type{<:LandenDirection}) = new{0, U, D}((), ())
 
-        # cant compute before checking value
-        isa(k′, Nothing) && (k′ = _k′(k))
+    function LandenSeq(k::T, k′::T, N::Integer, ktol::AbstractFloat,
+            D::Type{<:LandenDirection}) where {T<:RealOrComplexFloat}
+        ka = abs(k)
+        # all equations/integrals are in terms of k², so can pick posiitve root
+        # (real(k) < 0) && (k *= -1)
+        (N < 0) || (0 ≤ ka ≤ 1) || !(isfinite(k)) || return LandenSeq(T, D)
 
-        # check if already within range
-        if (descending && (abs(k) ≤ ktol)) || (!descending && (abs(k′) ≤ ktol))
-            return new{1, T}((k, ), (k′, ))
-        end
+        k, k′ = swap(D, _positive_root(k), _positive_root(k′))
 
-        descending || ((k, k′) = (k′, k))
+        # if already within range, no iterations needed
+        (ka ≤ ktol) && (N = 0)
 
         ks = zeros(T, N+1)
         k′s = zeros(T, N+1)
 
         ks[1], k′s[1] = k, k′
 
-        # landen_kernel = descending ? _desc_landen_kernel : _asc_landen_kernel
-        # k_conv = descending ? ktol : (1 - ktol)
-
         n = 0
-        @inbounds for i in 2:(N+1)
-            k, k′ = _desc_landen_kernel(k, k′)
-            # dirty hack
-            # k, k′ = (k, k′) ./ hypot(k, k′)
-            ks[i], k′s[i] = k, k′
+        for i in 2:(N+1)
+            k, k′ = _landen_kernel_stable(k, k′)
+            # k, k′ = (k, k′) ./ hypot(k, k′) # dirty hack
+            @inbounds ks[i], k′s[i] = k, k′
 
-            if abs(k) ≤ ktol # _converged(k, k′, ktol, descending)
+            if abs(k) ≤ ktol
                 n = i
                 break
             end
         end
 
-        descending || ((ks, k′s) = (k′s, ks))
-        return new{n, T}((ks[1:n]..., ), (k′s[1:n]..., ))
+        # N == 0 -> already converged, N > 1 && n == 0 -> did not converge
+        n += (N == 0)
+        ks, k′s = swap(D, ks, k′s)
+        return new{n, T, D}((ks[1:n]..., ), (k′s[1:n]..., ))
     end
 end
 
 const NonConvergedLandenSeq = LandenSeq{0}
-# when `k` is not a number
+# descending is arbitrary
+"""
+    LandenSeq(U::Type, D::Type{<:LandenDirection}=DescendingLanden)
+
+Return a `LandenSeq{0, U, D}() <: NonConvergedLandenSeq`.
+"""
+LandenSeq(U::Type) = LandenSeq(0, U, DescendingLanden)
 LandenSeq(k; args...) = LandenSeq(Base.Bottom)
+
+"""
+    LandenSeq(k, [k′]; N::Int=10, ktol=√eps(k), descending=(k ≤ 1/√2))
+
+Return the elliptic moduli, `{(kₙ, k′ₙ)}`, in a Landen sequence starting with `k₀ = k`
+
+Compute and store `LandenSeq` containing `{(kₙ, k′ₙ)}` of a descending (ascending) Landen
+sequence starting from `k₀ = k` until kₙ converges to 0 (1) via criteria
+`abs(kₙ) ≤ ktol` (`abs(k′ₙ) ≤ ktol` or `abs(kₙ) ≥ 1 - ktol`), with a maximum of
+`N` iterations performed. `K′ₙ/Kₙ` doubles (halves) per iteration.
+
+Return a `landen <: LandenSeq{0} == NonConvergedLandenSeq` if `k,k′ ∉ ℂ`,
+`(abs(k) > 1)`, or the sequence did not converge in `N` iterations.
+"""
+function LandenSeq(k::Number, k′::Maybe{Number}=nothing; N=10,
+        ktol=_default_tol(k), descending=(abs(k) ≤ _kmid))
+    isa(k′, Nothing) && (k′ = _k′(k))
+    k, k′ = _promote_float(k, k′)
+
+    D = (descending) ? DescendingLanden : AscendingLanden
+
+    return LandenSeq(k, k′, N, ktol, D)
+end
 
 Base.length(::LandenSeq{N}) where N = N
 Base.firstindex(::LandenSeq) = 1
@@ -96,45 +145,28 @@ Base.eltype(landen::LandenSeq)= NTuple{2, ktype(landen)}
 Base.iterate(landen::LandenSeq, state=1) = state ≤ length(landen) ?
         (landen[state], state+1) : nothing
 
-# landen can be used on complex moduli, and k can be an Int
-# √(eps) because 1 - k² = 1 when k² ≤ eps(k), so m is indistinguishable from 0
-@inline  _default_tol(k) = √(eps(float(real(one(k)))))
-
-const _kmid = 1/sqrt(2)
-
- # TODO improve accuraccy for k ≈ 1
- _k′(k) = sqrt((1-k)*(1+k))
-
-## TODO eval stablity and error accumulation here
-# esp descending
-
+direction(::LandenSeq{N,T,D}) where {N,T,D} = D
 
 # descending landen iteration k → 0
+# ascending kernel is this with arguments swappend, and output swapped again
 # not accuarte for k ≈ 1
-@inline function _desc_landen_kernel(k, k′=_k′(k))
-    if k ≤ eps(typeof(k))^(1/5)
-        kk = abs2(k)
+# assumes k ∉ (-∞, 0)
+@inline function _landen_kernel(k, k′)
+    if abs2(k)^6 ≤ _one_eps(k)
+        m = k^2
         # taylor series expansions around k = 0
-        return (1/4*kk*(1 + 1/2*kk*(1 + 5/8*kk*(1 + 7/2*kk))),
-                (1 - kk^2/32*(1 - kk*(1 - 57/64*kk))))
+        return ( @horner(m, 0, 256, 128, 80, 56, 42, 33) / 1024,
+            @horner(m, 65536, 0, -2048, -2048, -1824, -1600, -1409) / 65536)
     else
-        return (abs2(k/(1+k′)), 2*sqrt(k′)/(1+k′))
+        return ((k/(1+k′))^2, 2*sqrt(k′)/(1+k′))
     end
 end
 
-# ascending landen iteration k → 1
-#  ignored second argument to match `desc_landen_kernel` call
-@inline _asc_landen_kernel(k, k′) = reverse(_desc_landen_kernel(k′, k))
-
-"""
-    landenseq(k::Number; N::Int=10, ktol=eps(k), descending=true)
-
-Return a tuple of `{kₙ}` in a Landen sequence starting from `k₀ = k`
-
-Return `()::Tuple{}` for invalid inputs or if the sequence did not converge.
-See [`LandenSeq`](@ref) for options or more details.
-"""
-landenseq(args...; kargs...) = LandenSeq(args...; kargs...).ks
+_landen_kernel_stable(k::Real, k′::Real) = _landen_kernel(k, k′)
+@inline function _landen_kernel_stable(k::Complex, k′::Complex)
+    k, k′ = _landen_kernel(k, k′)
+    return (_positive_root(k), _positive_root(k′))
+end
 
 ################################################################################
 # K: quarter period
@@ -150,103 +182,112 @@ function K(landen::LandenSeq)
     ks = landen.ks
     k′s = landen.k′s
 
-    descending = last(ks) < last(k′s)
-    descending || ((ks, k′s) = (k′s, ks))
+    D = direction(landen)
+    ks, k′s = swap(D, ks, k′s)
 
     KK, KK′ = _K(ks, k′s)
-
-    return descending ? (KK, KK′) : (KK′, KK)
+    return swap(D, KK, KK′)
 end
 
 K(::NonConvergedLandenSeq) = NaN
 
 # compute K & K′ descending landen
 # not accurate for k₀ ≥ kmax
-# see Lecture Notes on Elliptic Filter Design, Sophocles J. Orfanidis, 2006
-function _K(ks, k′s)
+# Lecture Notes on Elliptic Filter Design, Sophocles J. Orfanidis, 2006
+# https://dlmf.nist.gov/19.8.E12
+@inline function _K(ks, k′s)
     k = first(ks)
     k′ = first(k′s)
     kₙ = last(ks)
     k′ₙ = last(k′s)
 
     K = oftype(k, pi)/2
-    @inbounds for n in 2:length(ks)
-        K *= 1 + ks[n]
+    for n in 2:length(ks)
+        @inbounds k = ks[n]
+        K *= 1 + k
     end
 
-    K′ = _large_K_approx(k′ₙ, kₙ)
+    K′ = _largeK(k′ₙ, kₙ)
     denom = oftype(k, 1)
-    @inbounds for n in 1:length(k′s)-1
-        denom *= 1 + k′s[n]
+    for n in 1:length(k′s)-1
+        @inbounds k′ = k′s[n]
+        denom *= 1 + k′
     end
 
     return (K, K′/denom)
 end
 
-# from Lecture Notes on Elliptic Filter Design, Sophocles J. Orfanidis, 2006
-const _kmin = 1e-6
-const _kmax = 0.9999999999995
-# only applicable if k ≥ _kmax
-@inline function _large_K_approx(::T, k′::T) where T
+# only applicable if k ≥ _kmax ≈ √(1 - 1e-12)
+@inline function _largeK(::T, k′::T) where T<:RealOrComplexFloat
     K = log(T(4)) - log(k′)
-    # pretty small numbers, and conv criteria is k′ ≤ √eps(), but ...
-    K += (K - 1)/2 * abs2(k′)
+    isinf(K) && return K
+
+    # pretty small numbers, so may not contribute much
+    K += (K - 1)/2 * k′^2
 
     return K
 end
 
 ################################################################################
+# amplitude
+################################################################################
+"""
+    gd(x)
+
+Gudermannian funciton, `gd(x)`, equal to the integral of `sech` from `0` to `x`
+"""
+gd(x::Number) = asin(tanh(x))
+
+"""
+    agd(x)
+
+Inverse Gudermannian funciton, `gd(x)`, equal to the integral of `sec` from `0` to `x`
+"""
+agd(x) = asinh(tan(x))
+
+# TODO, the rest of this
+# am -> small u k, k′ approximations
+
+################################################################################
 # jacobi functions
 ################################################################################
 
-# TODO
-# pq when u ≈ 0
+# TODO !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 # pq when k² ≥ 0 (or ph(k^2) = π)
-# k ≈ 0 or ≈ 1 ? -> Landen{1, Dir}
-# check for pole around `n = jK′` for trinity
+# check for pole around `n = jK′` for sncndn
+# condition number for _sncndn_small_z
 
+sncndn(_, ::NonConvergedLandenSeq) = NaN
 
-# approximations
-# https://dlmf.nist.gov/22.10
+function sncndn(z, landen::LandenSeq)
+    T = _promote_float_typeof(z, ktype(landen))
+    z = T(z)
 
-# z⁸ ≈ 0, k⁷ ≤ eps(T)
-function _trinity_approx_small_z(z::RealOrComplex, k::RealOrComplex, ::RealOrComplex)
-    kk = abs2(k)
-    sn_coefs = (0, 1, 0, -(1 + kk)/6, 0, (1 + kk*(14 + kk))/120,
-        -(1 + kk*(135 + kk*(135 + kk)))/5040)
-    cn_coefs = (1, 0, -0.5, 0, (1+4*kk)/24, 0, -(1 + kk*(44 + 16*kk))/720)
-    dn_coefs = (1, 0, -kk/2, 0, kk*(4 + kk)/24, 0, -kk*(16 + kk*(44 + kk))/720)
+    (abs2(z)^4 ≤ _one_eps(z)) &&
+            return _sncndn_small_z(z, last(landen)...)
 
-    return error("do me")
+    return _sncndn_seq(z, landen)
 end
 
-# k⁴ ≈ 0, k³ ≤ eps(T)
-function _trinity_approx_circular(z::RealOrComplex, k::RealOrComplex, ::RealOrComplex)
-    kk = abs2(k)
-    sz = sin(z)
-    cz = cos(z)
-    inner = kk * (z - sz * cz) / 4
+_sncndn_seq(z, landen::LandenSeq{1}) = _sncndn_seq_end(z, landen)
 
-    sn = sz - inner * cz
-    cn = cz + inner * sz
-    dn = 1 - abs2(k* sin(z)) / 2
+function _sncndn_seq(z, landen::LandenSeq)
+    N = length(landen)
+    D = direction(landen)
 
-    return (sn, cn, dn)
-end
+    ks = landen.ks
+    k′s = landen.k′s
 
-# k′⁴ ≈ 0, k′³ ≤ eps(T)
-function _trinity_approx_hyper(z::RealOrComplex, ::RealOrComplex, k′::RealOrComplex)
-    kk = abs2(k′)/4
-    sz = sinh(z)
-    cz = cos(z)
-    scz = sech(z)
-    tz = tanh(z)
-    sc = sz * cz
-    inner = kk * (z - sz * cz) / 4
+    K, K′ = _K(landen)
+    u = z / K
+    sn, cn, dn = _sncndn_seq_end(u * π/2, landen)
 
-    sn = tz - kk * (z - sc)*scz^2
-    cn = scz + kk * (z - sc) * tz * scz
-    dn = scz + kk * (z + sc) * tz * scz
+    for i in N:-1:2
+        @inbounds k = ks[i]
+        @inbounds k′ = k′s[i]
+
+        sn, cn, dn = _sncndn_seq_iter(sn, cn, dn, k, k′, D)
+    end
 
     return (sn, cn, dn)
 end
@@ -254,87 +295,92 @@ end
 # https://dlmf.nist.gov/22.7
 
 # given a descending sequence of moduli, go back up
-function _trinity_descending((sn, cn, dn)::NTuple{3, AbstractFloat}, ks::NTuple)
-    N = length(ks)
+@inline function _sncndn_seq_iter(sn, cn, dn, k, k′, ::Type{DescendingLanden})
+    n = 1 + k * sn^2
+    s = (1 + k) * sn / n
+    c = cn * dn / n
+    d = hypot(k′* s, c)
+    # avoid cancelation
+    # (1 - ksn2) / (1 + ksn2))
+    # (dn^2  - 1 + k) / (1 + k - dn^2)
 
-    for i in N:-1:2
-        @inbounds k = ks[i]
-        s = (1 + k) * (sn)
-        c = cn * dn
-        n = 1 + k * sn^2
-        d = dn^2  - 1 + k
-        nn = 1 + k - dn^2
-
-        sn = s/n
-        cn = c/n
-        dn = d/nn
-    end
+    return (s, c, d)
 end
 
 # given an ascending sequence of moduli, go back down
-function _trinity_ascending((sn, cn, dn)::NTuple{3, AbstractFloat}, ks::NTuple)
-    N = length(ks)
+@inline function _sncndn_seq_iter(sn, cn, dn, k, k′, ::Type{AscendingLanden})
+    m = k^2
+    dn2 = dn^2
+    mdn = m * dn
+    s = (1 + k′) * sn * cn / dn
+    # ascending should have k′ ≈ 1
+    c = m * (1 - (1+k′) * sn^2) / (m * dn)
+    # (1 + k′) * (dn2 - k′) / (m * dn)
+    d = hypot(k′ * s, c)
+    # (1 - k′) * (dn2 + k′) / (m * dn)
 
-    for i in N:-1:2
-        @inbounds k = ks[i]
-        s = (1 + k) * (sn)
-        c = cn * dn
-        n = 1 + k * sn^2
-        d = dn^2  - 1 + k
-        nn = 1 + k - dn^2
-
-        sn = s/n
-        cn = c/n
-        dn = d/nn
-    end
+    return (s, c, d)
 end
 
-# Elliptic Functions for Filter Design, Orchard, Willson, IEEE
-# Lecture Notes on Elliptic Filter Design, Sophocles J. Orfanidis, 2006
+#
+# jacobi approximations
+#
+# https://dlmf.nist.gov/22.10
 
-# for both:
-# `minus=true` is for `cs` (when using k′)
+# |z| ≈ 0, |z|⁸ ≤ eps(T)
+# converge when |z| < min(K(k), K′(k)), but π/2 ≤ min(K, K′)
+function _sncndn_small_z(z, k)
+    m = k^2
+    zz = z^2
 
-# start with `k₀ = first(ks) ≈ 0` and `wₙ` → `kₙ = last(ks)` and `w₀`
-# ie increasing `kᵢ`, in magnitude, so typically a reversed `ks` of a descending landen seq
-function _asc_gauss(w::Number, invw::Number, ks::NTuple, minus::Bool=false)
-    # TODO: compile-time versions based on minus. hopefully the compiler can optimize
-    N = length(ks)
-    coef = ifelse(minus, -1, 1)
+    # sn = @horner(z, 0, 1, 0, -(1 + m)/6, 0, (1 + m*(14 + m))/120, 0,
+    #     -(1 + m*(135 + m*(135 + m)))/5040)
+    # cn = @horner(z, 1, 0, -0.5, 0, (1+4*m)/24, 0, -(1 + m*(44 + 16*m))/720)
+    # dn = @horner(z, 1, 0, -m/2, 0, m*(4 + m)/24, 0, -m*(16 + m*(44 + m))/720)
+    sn = z * @horner(zz, 1, -(1 + m)/6, (1 + m*(14 + m))/120,
+        -(1 + m*(135 + m*(135 + m)))/5040)
+    cn = @horner(zz, 1, -0.5, (1+4*m)/24, -(1 + m*(44 + 16*m))/720)
+    dn = @horner(zz, 1, -m/2, m*(4 + m)/24, -m*(16 + m*(44 + m))/720)
 
-    # this does one extra calculation, so if last `k` is the target, skip N
-    for n in 1:(N-1)
-        k = ks[n]
-        num = w + coef * k * invw
-        den = 1 + k
-        # rather than have to do 1/(1/w) = 1/invw repeatdely
-        w = num/den
-        invw = den/num
-    end
-
-    return w, invw
+    return (sn, cn, dn)
 end
 
-# start with `k₀ = first(ks)` and `w₀` → `kₙ = last(ks) ≈ 0` and `wₙ`
-# ie decreasing `kᵢ`, in magnitude, so typically a reversed `ks` of a descending landen seq
-function _desc_gauss(w::Number, ::Number, ks::NTuple, minus::Bool=false)
-    # TODO: compile-time versions based on minus. hopefully the compiler can optimize
-    N = length(ks)
+# k ≈ 0, |k|³ ≤ eps(T), i guess?, its O(k⁴), but sn/cn(z) can be ≤ k
+# lets not use unless |k|² ≤ eps(T)
+_sncndn_seq_end(z, landen::LandenSeq{N,T,AscendingLanden}) where {N,T} =
+        _sncndn_hyper(z, last(landen.k′s))
 
-    for n in 2:N
-        k = ks[n]
-        kp = ks[n-1]
+_sncndn_seq_end(z, landen::LandenSeq{N,T,DescendingLanden}) where {N,T} =
+        _sncndn_circular(z, last(landen.ks))
 
-        t = ifelse(minus,
-            sqrt(abs2(w) + abs2(kp)),
-            sqrt((w-kp) * (w+kp)) )
-        w = (1+k)*(w + t)/2
-    end
+# keep these function names around for potential use elsewhere
+function _sncndn_circular(z, k)
+    m = k^2
+    sz = sin(z)
+    cz = cos(z)
+    inner = m * (z - sz * cz) / 4
 
-    return w, inv(w)
+    sn = sz - inner * cz
+    cn = cz + inner * sz
+    dn = 1 - (k * sin(z))^2 / 2
+
+    return (sn, cn, dn)
 end
 
+function _sncndn_hyper(z, k′)
+    m = k′^2 / 4
+    sz = sinh(z)
+    cz = cos(z)
+    scz = sech(z)
+    tz = tanh(z)
+    sc = sz * cz
+    inner = m * (z - sz * cz) / 4
 
+    sn = tz - m * (z - sc)*scz^2
+    cn = scz + m * (z - sc) * tz * scz
+    dn = scz + m * (z + sc) * tz * scz
 
+    return (sn, cn, dn)
+end
 
 end # module
