@@ -5,9 +5,9 @@
 @testset "Jacobi" begin
     @testset "Abramowitz & Stegun Table 16.1" begin
         dataloc = "data/ab"
-        # table 16.1
+        # table 16.1: α, ϵ, θs, θn
         t161, _ = readdlm(joinpath(dataloc, "table_16_1.csv"), ',', header=true)
-        # table 17.2
+        # table 17.2: α, K, E
         t172, _ = readdlm(joinpath(dataloc, "table_17_2.csv"), ',', header=true)
 
         K_lut = Dict(zip(t172[:, 1], t172[:, 2]))
@@ -26,40 +26,40 @@
             @testset "ϵ = $ϵ" for (j, ϵ) in enumerate(ϵs)
                 j₁ = length(ϵs) - j + 1
                 ϵ₁ = ϵs[j₁]
-                u = ϵ * K / 90
+                z = ϵ * K / 90
 
                 θs = θss[j, i]
                 θn = θns[j, i]
                 θc = θss[j₁, i]/denom
                 θd = θns[j₁, i]/denom
 
-                @test Jacobi.sn(u, m) ≈ θs / θn atol=2.5e-9
-                @test Jacobi.cn(u, m) ≈ θc / θn atol=2.5e-9
-                @test Jacobi.dn(u, m) ≈ θd / θn atol=2.5e-9
-                @test Jacobi.nn(u, m) == 1.0
+                @test Jacobi.sn(z, m) ≈ θs / θn atol=2.5e-9
+                @test Jacobi.cn(z, m) ≈ θc / θn atol=2.5e-9
+                @test Jacobi.dn(z, m) ≈ θd / θn atol=2.5e-9
+                @test Jacobi.nn(z, m) == 1.0
 
-                @test Jacobi.sd(u, m) ≈ θs / θd atol=2.5e-9
-                @test Jacobi.cd(u, m) ≈ θc / θd atol=2.5e-9
-                @test Jacobi.dd(u, m) == 1.0
-                @test Jacobi.nd(u, m) ≈ θn / θd atol=2.5e-9
+                @test Jacobi.sd(z, m) ≈ θs / θd atol=2.5e-9
+                @test Jacobi.cd(z, m) ≈ θc / θd atol=2.5e-9
+                @test Jacobi.dd(z, m) == 1.0
+                @test Jacobi.nd(z, m) ≈ θn / θd atol=2.5e-9
 
-                @test Jacobi.cc(u, m) == 1.0
+                @test Jacobi.cc(z, m) == 1.0
                 if ϵ != 90
                     # very sensitive around u = K,
                     # estimate of K(0) = pi/2 + 4e-9, so cosine causes errors
                     # also, errors build up in ϵ ≥75°, so lower tolerences for that
-                    @test Jacobi.sc(u, m) ≈ θs / θc atol=1e-7
-                    @test Jacobi.dc(u, m) ≈ θd / θc atol=1e-7
-                    @test Jacobi.nc(u, m) ≈ θn / θc atol=1e-7
+                    @test Jacobi.sc(z, m) ≈ θs / θc atol=1e-7
+                    @test Jacobi.dc(z, m) ≈ θd / θc atol=1e-7
+                    @test Jacobi.nc(z, m) ≈ θn / θc atol=1e-7
                 end
 
-                @test Jacobi.ss(u, m) == 1.0
-                @test Jacobi.cs(u, m) ≈ θc / θs atol=5.5e-8
-                @test Jacobi.ds(u, m) ≈ θd / θs atol=5.5e-8
-                @test Jacobi.ns(u, m) ≈ θn / θs atol=5.5e-8
+                @test Jacobi.ss(z, m) == 1.0
+                @test Jacobi.cs(z, m) ≈ θc / θs atol=5.5e-8
+                @test Jacobi.ds(z, m) ≈ θd / θs atol=5.5e-8
+                @test Jacobi.ns(z, m) ≈ θn / θs atol=5.5e-8
 
                 # ellipj
-                s, c, d = ellipj(u, m)
+                s, c, d = ellipj(z, m)
                 @test s ≈ θs / θn atol=1e-9
                 @test c ≈ θc / θn atol=1e-9
                 @test d ≈ θd / θn atol=1e-9

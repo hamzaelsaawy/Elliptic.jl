@@ -1,103 +1,138 @@
+#
+# jacobi elliptic functions
+#
+# sn, cn, dn:
+# https://dlmf.nist.gov/22.2
+# am (amplitude):
+# http://dlmf.nist.gov/22.16.i
+
 module Jacobi
 
-export am,
-    sn, cn, dn, nn,
-    sd, cd, dd, nd,
-    sc, cc, dc, nc,
-    ss, cs, ds, ns
+import ..Elliptic.Landen: LandenSeq, NonConvergedLandenSeq,
+        AscendingLanden, DescendingLanden, direction, ktype, K
 
-# Abramowitz & Stegun, section 16.4, p571
-const _ambuf = Array{Float64}(undef, 10)
-function _am(u::Float64, m::Float64, tol::Float64)
-    if u == 0. return 0. end
+export am, sncndn,
+    sn, cn, dn
 
-    sqrt_tol = sqrt(tol)
-    if m < sqrt_tol
-        # A&S 16.13.4
-        return u - 0.25*m*(u - 0.5*sin(2.0*u))
-    end
-    m1 = 1. - m
-    if m1 < sqrt_tol
-        # A&S 16.15.4
-        t = tanh(u)
-        return asin(t) + 0.25*m1*(t - u*(1. - t^2))*cosh(u)
-    end
+include("misc.jl")
+include("jacobi_approx.jl")
 
-    a,b,c,n = 1., sqrt(m1), sqrt(m), 0
-    while abs(c) > tol
-        @assert n < 10
-        a,b,c,n = 0.5*(a+b), sqrt(a*b), 0.5*(a-b), n+1
-        _ambuf[n] = c/a
-    end
+################################################################################
+# amplitude
+################################################################################
 
-    phi = ldexp(a*u, n)
-    for i = n:-1:1
-        phi = 0.5*(phi + asin(_ambuf[i]*sin(phi)))
-    end
-    phi
-end
-_am(u::Float64, m::Float64) = _am(u, m, eps(Float64))
+@inline function am(z, k, k′=_k′(k))
+    z, k = _promote_float(z, k)
+    tol = _one_eps(z)
 
-"""
-    am(u::Real, m::Real, [tol::Real=eps(Float64)])
-
-Returns amplitude, φ, such that u = F(φ | m)
-
-Landen sequence with convergence to `tol` used if `√(tol) ≤ m ≤ 1 - √(tol)`
-"""
-function am(u::Float64, m::Float64, tol::Float64)
-    (m < 0. || m > 1.) && throw(DomainError(m, "am requires m ∈ [0, 1]"))
-    _am(u, m, tol)
-end
-am(u::Float64, m::Float64) = am(u, m, eps(Float64))
-am(u::Real, m::Real) = am(Float64(u), Float64(m))
-
-for (f,a,b,c) in ((:sn, :(sin(phi)),                :(sqrtmu1*s), :(sqrt(mu)*sin(phi))),
-                  (:cn, :(cos(phi)),                :(cos(phi)),  :(sqrt(1. - mu*sin(phi)^2))),
-                  (:dn, :(sqrt(1. - m*sin(phi)^2)), :(1.),        :(cos(phi))))
-    @eval begin
-        function ($f)(u::Float64, m::Float64)
-            # Abramowitz & Stegun, section 16.10, p573
-            lt0 = m < 0.
-            gt1 = m > 1.
-            if !(lt0 || gt1)
-                phi = _am(u,m)
-                return $a
-            elseif lt0
-                mu1 = 1.0/(1. - m)
-                mu = -m*mu1
-                sqrtmu1 = sqrt(mu1)
-                v = u/sqrtmu1
-                phi = _am(v,mu)
-                s = sin(phi)
-                return ($b)/sqrt(1. - mu*s^2)
-            elseif gt1
-                mu = 1/m
-                v = u*sqrt(m)
-                phi = _am(v,mu)
-                return $c
-            end
-        end
+    return if abs2(z)^3 ≤ tol
+        _am_small_z(z, k)
+    elseif abs(k)^3 ≤ tol
+        _am_circular(z, k)
+    elseif abs(k′)^3 ≤ tol
+        _am_hyper(z, k′)
+    else
+        asin(sn(z, k))
     end
 end
 
-xn = ((:s,:(sn(u,m))), (:c,:(cn(u,m))), (:d,:(dn(u,m))), (:n,:(1.)))
-for (p,num) in xn, (q,den) in xn
-    f = Symbol(p, q)
-    @eval begin
-        """
-            $($f)(u::Real, m::Real)
+################################################################################
+# jacobi landen/gauss sequence
+################################################################################
 
-        Compute the Jacobi elliptic function $($f)(u | m)
-        """
-        ($f)(u::Real, m::Real) = ($f)(Float64(u), Float64(m))
+# TODO
+# pq when k² ≥ 0 (or ph(k^2) = π)
+# check for pole around `n = jK′` for sncndn
+
+sn(z, k) = sncndn(z, k)[1]
+cn(z, k) = sncndn(z, k)[2]
+dn(z, k) = sncndn(z, k)[3]
+
+sncndn(z, k::Number) = sncndn(z, LandenSeq(k))
+sncndn(z, k::Number, k′::Number) = sncndn(z, LandenSeq(k, k′))
+
+
+function sncndn(z, k::Number, k′::Maybe{Number}=missing)
+    ma = abs2(z)
+    swapped = false
+
+    if ma ≥ 1
+        z /= k
+        k, k′ = 1/k, im*k′/k
+        swapped = true
     end
 
-    if (p == q)
-        @eval ($f)(::Float64, ::Float64) = 1.0
-    elseif (q != :n)
-        @eval ($f)(u::Float64, m::Float64) = ($num)/($den)
-    end
+    s, c, d = sncndn(z, LandenSeq(k, k′))
+
+    return (swapped ? k*s, d, c : s, c, d)
 end
 
-end # module
+sncndn(_, ::NonConvergedLandenSeq) = NaN, NaN, NaN
+function sncndn(z, landen::LandenSeq)
+    T = promote_type(_float_typeof(z), ktype(landen))
+    z = T(z)
+
+    (abs2(z)^4 ≤ eps(T)) && return _sncndn_small_z(z, last(landen.ks))
+
+    return _sncndn_seq(z, landen)
+end
+
+_sncndn_seq(z, landen::LandenSeq{1}) = _sncndn_seq_end(z, landen)
+
+@inline function _sncndn_seq(z, landen::LandenSeq)
+    N = length(landen)
+    D = direction(landen)
+
+    ks = landen.ks
+    k′s = landen.k′s
+
+    KK, _ = K(landen)
+    sn, cn, dn = _sncndn_seq_end(z * π / (2 * KK), landen)
+
+    for i in N:-1:2
+        @inbounds k = ks[i]
+        @inbounds k′ = k′s[i]
+
+        sn, cn, dn = _sncndn_seq_iter(sn, cn, dn, k, k′, D)
+    end
+
+    return (sn, cn, dn)
+end
+
+_sncndn_seq_end(z, landen::LandenSeq{N,T,AscendingLanden}) where {N,T} =
+        _sncndn_hyper(z, last(landen.k′s))
+
+_sncndn_seq_end(z, landen::LandenSeq{N,T,DescendingLanden}) where {N,T} =
+        _sncndn_circular(z, last(landen.ks))
+end
+
+# https://dlmf.nist.gov/22.7
+
+# given a descending sequence of moduli, go back up
+@inline function _sncndn_seq_iter(sn, cn, dn, k, k′, ::Type{DescendingLanden})
+    n = 1 + k * sn^2
+    s = (1 + k) * sn / n
+    c = cn * dn / n
+    # avoid cancelation
+    sn2 = sn^2
+    d = (1 - k * sn2) / (1 + k * sn2)
+    # d = hypot(k′ * s, c)
+    # d = (dn^2  - 1 + k) / (1 - dn^2 + k)
+
+    return (s, c, d)
+end
+
+# given an ascending sequence of moduli, go back down
+@inline function _sncndn_seq_iter(sn, cn, dn, k, k′, ::Type{AscendingLanden})
+    m = k^2
+    dn2 = dn^2
+    mdn = m * dn
+    s = (1 + k′) * sn * cn / dn
+    # ascending should have k′ ≈ 1
+    c = m * (1 - (1+k′) * sn^2) / (m * dn)
+    # (1 + k′) * (dn2 - k′) / (m * dn)
+    d = hypot(k′ * s, c)
+    # (1 - k′) * (dn2 + k′) / (m * dn)
+
+    return (s, c, d)
+end
