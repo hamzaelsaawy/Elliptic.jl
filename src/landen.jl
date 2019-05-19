@@ -15,12 +15,16 @@ export LandenSeq, NonConvergedLandenSeq
 # √(eps) because 1 - k² = 1 when k² ≤ eps(k), so m is indistinguishable from 0
 # need k ≤ _kmin for K′ approximation convergence
 # also, see _sncndn_seq_end for √eps decision
-_default_tol(k) = min(√(_one_eps(k)), _kmin)
+_default_tol(k) = min(√_one_eps(k), _kmin)
 
-const _kmid = 1/sqrt(2.0)
+const _kmid = 2.0^(-0.5)
 # from Lecture Notes on Elliptic Filter Design, Sophocles J. Orfanidis, 2006
 const _kmin = 1e-6
 const _kmax = 0.9999999999995 # _k′(_kmin)
+
+# more type magic
+_k′(::T, k′::T) where T = k′
+_k′(k, ::Nothing) = _k′(k)
 
 abstract type LandenDirection end
 struct DescendingLanden <: LandenDirection end
@@ -39,32 +43,32 @@ struct LandenSeq{N, T<:RealOrComplexFloat, D<:LandenDirection}
     k′s::NTuple{N, T}
 
     # non-converged case
-    LandenSeq(U::Type, D::Type{<:LandenDirection}) = new{0, U, D}((), ())
+    LandenSeq{0, U, D}() where {U, D} = new((), ())
 
     function LandenSeq(k::T, k′::Maybe{T}, N::Integer, ktol::AbstractFloat,
             D::Type{<:LandenDirection}) where {T<:RealOrComplexFloat}
-        ka = abs(k)
+        ((N > 0) && (0 ≤ abs2(k) ≤ 1) && isfinite(k)) || return LandenSeq(T, D)
 
-        # all equations/integrals are in terms of k², so pick posiitve root
-        (N < 0) || (0 ≤ ka ≤ 1) || !(isfinite(k)) || return LandenSeq(T, D)
-        # safe to do √
-        isa(k′, Nothing) && (k′ = _k′(k))
-
-        k, k′ = swap(D, _abs_real(k), _abs_real(k′))
+        # pick positive root (equations are in terms of k²)
+        k = _abs_real(k)
+        # safe to find k′ (not negative k)
+        k′ = _abs_real(_k′(k))
+        k, k′ = swap(D, k, k′)
 
         # if already within range, no iterations needed
-        (ka ≤ ktol) && (N = 0)
+        (abs(k) ≤ ktol) && (N = 0)
 
-        ks = zeros(T, N+1)
-        k′s = zeros(T, N+1)
+        buff = Array{T}(undef, 2, N+1)
 
-        ks[1], k′s[1] = k, k′
+        @inbounds buff[1, 1] = k
+        @inbounds buff[2, 1] = k′
 
         n = 0
         for i in 2:(N+1)
             k, k′ = _landen_kernel_stable(k, k′)
             # k, k′ = (k, k′) ./ hypot(k, k′) # dirty hack
-            @inbounds ks[i], k′s[i] = k, k′
+            @inbounds buff[1, i] = k
+            @inbounds buff[2, i] = k′
 
             if abs(k) ≤ ktol
                 n = i
@@ -72,10 +76,10 @@ struct LandenSeq{N, T<:RealOrComplexFloat, D<:LandenDirection}
             end
         end
 
-        # N == 0 -> already converged, N > 1 && n == 0 -> did not converge
+        # when n == 0: N == 0 -> already converged; N > 1 -> did not converge
         n += (N == 0)
-        ks, k′s = swap(D, ks, k′s)
-        return new{n, T, D}((ks[1:n]..., ), (k′s[1:n]..., ))
+        k_ind, k′_ind = swap(D, 1, 2)
+        return new{n, T, D}((buff[k_ind, 1:n]..., ), (buff[k′_ind, 1:n]..., ))
     end
 end
 
@@ -86,7 +90,8 @@ const NonConvergedLandenSeq = LandenSeq{0}
 
 Return a `LandenSeq{0, U, D}() <: NonConvergedLandenSeq`.
 """
-LandenSeq(U::Type) = LandenSeq(0, U, DescendingLanden)
+LandenSeq(U::Type) = LandenSeq{0, U, DescendingLanden}()
+# k not a number
 LandenSeq(k; args...) = LandenSeq(Base.Bottom)
 
 """
@@ -104,12 +109,7 @@ Return a `landen <: LandenSeq{0} == NonConvergedLandenSeq` if `k,k′ ∉ ℂ`,
 """
 function LandenSeq(k::Number, k′::Maybe{Number}=nothing; N=10,
         ktol=_default_tol(k), descending=(abs(k) ≤ _kmid))
-    if isa(k′, Nothing)
-        k = _promote_float(k)
-    else
-        k, k′ = _promote_float(k, k′)
-    end
-
+    k, k′ = _promote_float(k, k′)
     D = (descending) ? DescendingLanden : AscendingLanden
 
     return LandenSeq(k, k′, N, ktol, D)

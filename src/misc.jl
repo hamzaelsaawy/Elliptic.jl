@@ -11,17 +11,19 @@ Base.ldexp(z::Complex, n::Integer) =
         Complex(ldexp(real(z), n), ldexp(imag(z), n))
 
 # do everything as a float
-_one_eps(x) = eps(float(real(typeof(x))))
+_one_eps(::Type{T}=Float64) where T<:Number = eps(float(real(T)))
+_one_eps(x::Number) = _one_eps(typeof(x))
 
-_float_typeof(x) = float(typeof(x))
+_float_typeof(x::Number) = float(typeof(x))
+_float_typeof(::Nothing) = Nothing
 _promote_float_typeof(x) = _float_typeof(x)
 @inline _promote_float_typeof(x, xs...) =
         promote_type(_promote_float_typeof(x), _promote_float_typeof(xs...))
 _promote_float(ts...) = convert.(_promote_float_typeof(ts...), ts)
 
 # rotate numbers by pi to have phase in (-pi/2, pi/2)
-# if real(x) == 0, can either be ±pi/2 ... wont check for that
 _abs_real(x::Real) = abs(x)
+# if real(x) == 0, can either be ±pi/2 ... wont check for that
 _abs_real(x::Complex) = ifelse(real(x) < 0, -x, x)
 
  _k′(k) = sqrt((1-k)*(1+k))

@@ -43,7 +43,7 @@ end
 @inline function _sncndn_circular(z, k)
     s, c = sincos(z)
     inner = k^2 * (z - s * c) / 4
-    sqrt2 = √2
+    sqrt2 = oftype(z, √2)
 
     sn = s - inner * c
     cn = c + inner * s
@@ -71,4 +71,4 @@ end
 _am_circular(z, k) = z - k^2 * (2*z - sin(2*z)) / 8
 
 # k′ ≈ 0, O(k′⁴), |k′|³ ≤ eps
-_am_hyper(z, k′) = gd(z) - k′^2 * (2*x - sinh(2*z)) / (8 * cosh(z))
+_am_hyper(z, k′) = gd(z) - k′^2 * (2*z - sinh(2*z)) / (8 * cosh(z))

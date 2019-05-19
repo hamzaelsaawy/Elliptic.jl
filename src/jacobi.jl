@@ -8,7 +8,8 @@
 
 module Jacobi
 
-import ..Elliptic.Landen: LandenSeq, NonConvergedLandenSeq,
+import ..Landen
+using ..Landen: LandenSeq, NonConvergedLandenSeq,
         AscendingLanden, DescendingLanden, direction, ktype, K
 
 export am, sncndn,
@@ -43,14 +44,11 @@ end
 # TODO
 # pq when k² ≥ 0 (or ph(k^2) = π)
 # check for pole around `n = jK′` for sncndn
+# special versions of sn,dn,cn iterations?
 
 sn(z, k) = sncndn(z, k)[1]
 cn(z, k) = sncndn(z, k)[2]
 dn(z, k) = sncndn(z, k)[3]
-
-sncndn(z, k::Number) = sncndn(z, LandenSeq(k))
-sncndn(z, k::Number, k′::Number) = sncndn(z, LandenSeq(k, k′))
-
 
 function sncndn(z, k::Number, k′::Maybe{Number}=missing)
     ma = abs2(z)
@@ -64,7 +62,7 @@ function sncndn(z, k::Number, k′::Maybe{Number}=missing)
 
     s, c, d = sncndn(z, LandenSeq(k, k′))
 
-    return (swapped ? k*s, d, c : s, c, d)
+    return (swapped ? (k*s, d, c) : (s, c, d))
 end
 
 sncndn(_, ::NonConvergedLandenSeq) = NaN, NaN, NaN
@@ -99,13 +97,15 @@ _sncndn_seq(z, landen::LandenSeq{1}) = _sncndn_seq_end(z, landen)
     return (sn, cn, dn)
 end
 
+_sncndn_seq_end(z, landen::LandenSeq{N,T,DescendingLanden}) where {N,T} =
+        _sncndn_circular(z, last(landen.ks))
+
 _sncndn_seq_end(z, landen::LandenSeq{N,T,AscendingLanden}) where {N,T} =
         _sncndn_hyper(z, last(landen.k′s))
 
-_sncndn_seq_end(z, landen::LandenSeq{N,T,DescendingLanden}) where {N,T} =
-        _sncndn_circular(z, last(landen.ks))
-end
-
+#
+# landen/gauss transformations
+#
 # https://dlmf.nist.gov/22.7
 
 # given a descending sequence of moduli, go back up
@@ -136,3 +136,5 @@ end
 
     return (s, c, d)
 end
+
+end # module
