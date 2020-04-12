@@ -9,7 +9,7 @@ Incomplete elliptic integral of the second kind, `E(φ | m)`, for angle `φ` and
 """
 function E(phi::Float64, m::Float64)
     if isnan(phi) || isnan(m) return NaN end
-    if m < 0. || m > 1. throw(DomainError()) end
+    if m < 0. || m > 1. throw(DomainError(m, "argument m not in [0,1]")) end
     if abs(phi) > pi/2
         phi2 = phi + pi/2
         return 2*fld(phi2,pi)*E(m) - _E(cos(mod(phi2,pi)), m)
@@ -35,17 +35,22 @@ E(phi::Real, m::Real) = E(Float64(phi), Float64(m))
 """
     ellipke(m)
 
-Matlab compatible call, returns `(K(m), E(m))`
+Matlab compatible call, returns `(K(m), E(m))` for scalar `0 ≤ m ≤ 1`
 """
 function ellipke(m::Float64)
-    if isnan(m) return NaN, NaN end
-    if m < 0. || m > 1. throw(DomainError()) end
-    if m == 1. return Inf, 1. end
-    y = 1. - m
-    drf,ierr1 = SLATEC.DRF(0., y, 1.)
-    drd,ierr2 = SLATEC.DRD(0., y, 1.)
-    @assert ierr1 == 0 && ierr2 == 0
-    drf, drf - m*drd/3
+    if m < 1.
+        y = 1. - m
+        drf,ierr1 = SLATEC.DRF(0., y, 1.)
+        drd,ierr2 = SLATEC.DRD(0., y, 1.)
+        @assert ierr1 == 0 && ierr2 == 0
+        return drf, drf - m*drd/3
+    elseif m == 1.
+        return Inf, 1.
+    elseif isnan(m)
+        return NaN, NaN
+    else
+        throw(DomainError(m, "argument m not <= 1"))
+    end
 end
 ellipke(x::Real) = ellipke(Float64(x))
 
@@ -58,24 +63,6 @@ E(m::Float64) = ellipke(m)[2]
 E(x::Float32) = Float32(E(Float64(x)))
 E(x::Real) = E(Float64(x))
 
-
-"""
-    F(φ, m)
-
-Incomplete elliptic integral of the first kind, `F(φ | m)`, for angle `φ` and parameter `m`
-"""
-function F(phi::Float64, m::Float64)
-    if isnan(phi) || isnan(m) return NaN end
-    if m < 0. || m > 1. throw(DomainError()) end
-    if abs(phi) > pi/2
-        # Abramowitz & Stegun (17.4.3)
-        phi2 = phi + pi/2
-        return 2*fld(phi2,pi)*K(m) - rawF(cos(mod(phi2,pi)), m)
-    end
-    rawF(sin(phi), m)
-end
-F(phi::Real, m::Real) = F(Float64(phi), Float64(m))
-
 # assumes 0 ≤ m ≤ 1
 function rawF(sinphi::Float64, m::Float64)
     if abs(sinphi) == 1. && m == 1. return sign(sinphi)*Inf end
@@ -86,17 +73,39 @@ function rawF(sinphi::Float64, m::Float64)
 end
 
 """
+    F(φ, m)
+
+Incomplete elliptic integral of the first kind, `F(φ | m)`, for angle `φ` and parameter `m`
+"""
+function F(phi::Float64, m::Float64)
+    if isnan(phi) || isnan(m) return NaN end
+    if m < 0. || m > 1. throw(DomainError(m, "argument m not in [0,1]")) end
+    if abs(phi) > pi/2
+        # Abramowitz & Stegun (17.4.3)
+        phi2 = phi + pi/2
+        return 2*fld(phi2,pi)*K(m) - rawF(cos(mod(phi2,pi)), m)
+    end
+    rawF(sin(phi), m)
+end
+F(phi::Real, m::Real) = F(Float64(phi), Float64(m))
+
+"""
     K(m)
 
 Complete elliptic integral of the first kind, `K(m) = F(π/2 | m)`, for parameter `m`
 """
 function K(m::Float64)
-    if isnan(m) return NaN end
-    if m < 0. || m > 1. throw(DomainError()) end
-    if m == 1. return Inf end
-    drf,ierr = SLATEC.DRF(0., 1. - m, 1.)
-    @assert ierr == 0
-    drf
+    if m < 1.
+        drf,ierr = SLATEC.DRF(0., 1. - m, 1.)
+        @assert ierr == 0
+        return drf
+    elseif m == 1.
+        return Inf
+    elseif isnan(m)
+        return NaN
+    else
+        throw(DomainError(m, "argument m not <= 1"))
+    end
 end
 K(x::Float32) = Float32(K(Float64(x)))
 K(x::Real) = K(Float64(x))
@@ -109,7 +118,7 @@ Incomplete elliptic integral of the third kind, `Π(n; φ | m)`, for angle `φ` 
 """
 function Pi(n::Float64, phi::Float64, m::Float64)
     if isnan(n) || isnan(phi) || isnan(m) return NaN end
-    if m < 0. || m > 1. throw(DomainError()) end
+    if m < 0. || m > 1. throw(DomainError(m, "argument m not in [0,1]")) end
     sinphi = sin(phi)
     sinphi2 = sinphi^2
     cosphi2 = 1. - sinphi2
